@@ -1,0 +1,29 @@
+apply plugin: 'java'
+apply plugin: 'gradle-one-jar'
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.github.rholder:gradle-one-jar:1.0.4'
+    }
+}
+
+repositories {
+    mavenLocal()
+    jcenter()
+
+}
+
+task uberJar(type: OneJar) {
+    mainClass = 'net.anzix.hbase.BitcoinImport'
+}
+
+dependencies {
+    compile 'org.slf4j:slf4j-api:1.7.21'
+    compile 'org.apache.hbase:hbase-client:1.2.4'
+    compile 'args4j:args4j:2.33'
+    compile 'com.github.zuinnote:hadoopcryptoledger-fileformat:1.0.1'
+    testCompile 'junit:junit:4.12'
+}
