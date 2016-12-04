@@ -10,7 +10,7 @@ import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
 import org.zuinnote.hadoop.bitcoin.format.BitcoinBlock;
 import org.zuinnote.hadoop.bitcoin.format.BitcoinBlockReader;
-import org.zuinnote.hadoop.bitcoin.format.BitcoinUtil;
+import org.zuinnote.hadoop.bitcoin.format.BitcoinTransaction;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -20,6 +20,8 @@ import java.nio.file.Path;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+
+import static org.zuinnote.hadoop.bitcoin.format.BitcoinUtil.*;
 
 /**
  * Bitcoin transaction/block importer to hbase.
@@ -57,12 +59,14 @@ public class BitcoinImport {
         Configuration conf = HBaseConfiguration.create();
         conf.set("hbase.zookeeper.quorum", quorum);
 
-        HTable hTable = new HTable(conf, "block");
-        hTable.setAutoFlush(false);
+        HTable blockTable = new HTable(conf, "block");
+        HTable transactionTable = new HTable(conf, "transaction");
+        blockTable.setAutoFlush(false);
+        transactionTable.setAutoFlush(false);
 
         Files.list(blockDir).filter(path -> path.getFileName().toString().startsWith("blk")).forEach(p -> {
             try {
-                load(p.toFile(), hTable);
+                load(p.toFile(), blockTable, transactionTable);
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
@@ -72,35 +76,68 @@ public class BitcoinImport {
         Thread.sleep(1000);
     }
 
-    private void load(File file, HTable htable) throws Exception {
+    private void load(File file, HTable blockTable, HTable transactionTable) throws Exception {
 
         System.out.println("Processing file: " + file);
-        List<Put> puts = new ArrayList<>();
 
         BitcoinBlockReader reader = new BitcoinBlockReader(new FileInputStream(file), DEFAULT_MAXSIZE_BITCOINBLOCK, DEFAULT_BUFFERSIZE, DEFAULT_MAGIC, true);
         BitcoinBlock block;
         int record = 0;
         try {
             while ((block = reader.readBlock()) != null) {
-                Put p = blockToPut(file, block);
-                puts.add(p);
-                record++;
+                byte[] reverseBlockHash = Bytes.toBytes(convertByteArrayToHexString(reverseByteArray(getBlockHash(block))));
+                loadBlocks(file, reverseBlockHash, block, blockTable);
+                loadTransactions(file, reverseBlockHash, block, transactionTable);
+
             }
         } catch (Exception ex) {
             ex.printStackTrace();
         }
-
-        if (!dryRun) {
-            htable.put(puts);
-            htable.flushCommits();
-        }
-        System.out.println("Imported records: " + record);
-
-
     }
 
-    private Put blockToPut(File file, BitcoinBlock block) throws NoSuchAlgorithmException, IOException {
-        Put p = new Put(Bytes.toBytes(BitcoinUtil.convertByteArrayToHexString(BitcoinUtil.reverseByteArray(BitcoinUtil.getBlockHash(block)))));
+    private void loadTransactions(File file, byte[] reverseBlockHash, BitcoinBlock block, HTable transactionTable) {
+        try {
+            List<Put> puts = new ArrayList<>();
+
+            puts.addAll(transactiontsToPut(file, reverseBlockHash, block));
+            if (!dryRun) {
+                transactionTable.put(puts);
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+
+    private void loadBlocks(File file, byte[] reverseBlockHash, BitcoinBlock block, HTable blockTable) {
+        try {
+            List<Put> puts = new ArrayList<>();
+
+            puts.add(blockToPut(file, reverseBlockHash, block));
+            if (!dryRun) {
+                blockTable.put(puts);
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+
+    private List<Put> transactiontsToPut(File file, byte[] reverseBlockHash, BitcoinBlock block) throws IOException, NoSuchAlgorithmException {
+        List<Put> result = new ArrayList<>();
+        for (BitcoinTransaction tr : block.getTransactions()) {
+            byte[] transactionHash = reverseByteArray(getTransactionHash(tr));
+            Put p = new Put(Bytes.toBytes(convertByteArrayToHexString(reverseByteArray(transactionHash))));
+            p.setWriteToWAL(false);
+            p.add(Bytes.toBytes("t"), Bytes.toBytes("is"), Bytes.toBytes(tr.getListOfInputs().size()));
+            p.add(Bytes.toBytes("t"), Bytes.toBytes("os"), Bytes.toBytes(tr.getListOfOutputs().size()));
+            p.add(Bytes.toBytes("t"), Bytes.toBytes("tc"), Bytes.toBytes(block.getTransactionCounter()));
+            p.add(Bytes.toBytes("t"), Bytes.toBytes("b"), Bytes.toBytes(convertByteArrayToHexString(reverseByteArray(reverseBlockHash))));
+            result.add(p);
+        }
+        return result;
+    }
+
+    private Put blockToPut(File file, byte[] reverseBlockHash, BitcoinBlock block) throws NoSuchAlgorithmException, IOException {
+        Put p = new Put(reverseBlockHash);
         p.setWriteToWAL(false);
         p.add(Bytes.toBytes("b"), Bytes.toBytes("d"), Bytes.toBytes(block.getTime()));
         p.add(Bytes.toBytes("b"), Bytes.toBytes("s"), Bytes.toBytes(block.getBlockSize()));
